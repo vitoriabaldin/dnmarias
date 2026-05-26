@@ -1,0 +1,211 @@
+import os
+import re
+from collections import Counter
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import emoji
+import nltk
+from nltk.corpus import stopwords
+from sklearn.feature_extraction.text import CountVectorizer
+from wordcloud import WordCloud
+from pysentimiento import create_analyzer
+
+# ---------- CONFIG ----------
+INPUT_CSV  = r"C:\Users\viihb\Downloads\instagram(2).csv"
+OUTPUT_DIR = r"C:\Users\viihb\Downloads\analise_instagram"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+nltk.download("stopwords", quiet=True)
+
+# ---------- 1. CARREGAR E NORMALIZAR COLUNAS POR POSIÇÃO ----------
+# O CSV vem do scraper com nomes de coluna que são seletores CSS gigantes
+# e inutilizáveis. Vamos pegar por índice posicional (iloc):
+#   col 3 = username
+#   col 5 = tempo ("3 sem")
+#   col 6 = texto do comentário
+#   col 7 = curtidas ("7 curtidas")
+try:
+    raw = pd.read_csv(INPUT_CSV, encoding="utf-8")
+except UnicodeDecodeError:
+    raw = pd.read_csv(INPUT_CSV, encoding="latin-1")
+
+print(f"Linhas brutas: {len(raw)} | Colunas: {len(raw.columns)}")
+
+df = pd.DataFrame({
+    "usuario":    raw.iloc[:, 3].astype(str).str.strip(),
+    "tempo":      raw.iloc[:, 5].astype(str).str.strip(),
+    "comentario": raw.iloc[:, 6].astype(str).str.strip(),
+    "curtidas_raw": raw.iloc[:, 7].astype(str).str.strip(),
+})
+
+# Extrair número de curtidas de strings tipo "111 curtidas", "1,2 mil curtidas"
+def parse_curtidas(s):
+    s = s.lower().replace(".", "").replace(",", ".")
+    m = re.search(r"([\d\.]+)\s*(mil|mi)?", s)
+    if not m:
+        return 0
+    num = float(m.group(1))
+    suf = m.group(2)
+    if suf == "mil":
+        num *= 1_000
+    elif suf == "mi":
+        num *= 1_000_000
+    return int(num)
+
+df["curtidas"] = df["curtidas_raw"].apply(parse_curtidas)
+
+# Remover linhas sem texto útil
+df = df[df["comentario"].str.len() > 0]
+df = df[~df["comentario"].isin(["nan", "Curtir", "Responder"])].reset_index(drop=True)
+print(f"Comentários válidos: {len(df)}")
+
+# ---------- 2. LIMPEZA DE TEXTO ----------
+stop_pt = set(stopwords.words("portuguese"))
+stop_pt.update({
+    "pra", "pro", "q", "vc", "voce", "tao", "ne", "eh", "ta", "so",
+    "ai", "ja", "tb", "tbm", "mt", "mto", "muito", "gente", "aqui",
+    "ali", "ah", "oh", "eita", "nao", "sim", "ser", "ter", "vai",
+    "to", "tava", "tipo", "tudo", "todo", "toda", "cara", "mano"
+})
+
+def clean_text(t):
+    t = t.lower()
+    t = emoji.replace_emoji(t, "")
+    t = re.sub(r"http\S+|www\S+", " ", t)
+    t = re.sub(r"@\w+", " ", t)
+    t = re.sub(r"#\w+", " ", t)
+    t = re.sub(r"[^a-záàâãéèêíïóôõöúçñ\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+df["texto_limpo"] = df["comentario"].apply(clean_text)
+
+# ---------- 3. PALAVRAS MAIS FREQUENTES + TF ----------
+todas_palavras = [
+    w for txt in df["texto_limpo"]
+    for w in txt.split()
+    if len(w) > 2 and w not in stop_pt
+]
+top_words_df = pd.DataFrame(
+    Counter(todas_palavras).most_common(50),
+    columns=["palavra", "frequencia"]
+)
+
+# TF via CountVectorizer (inclui bigramas)
+vec = CountVectorizer(
+    stop_words=list(stop_pt),
+    min_df=2,
+    ngram_range=(1, 2)   # uni + bigrama
+)
+X = vec.fit_transform(df["texto_limpo"])
+tf_df = (
+    pd.DataFrame({"termo": vec.get_feature_names_out(),
+                  "tf": X.sum(axis=0).A1})
+    .sort_values("tf", ascending=False)
+    .head(100)
+)
+
+# Gráfico top palavras
+plt.figure(figsize=(10, 8))
+t15 = top_words_df.head(15)[::-1]
+plt.barh(t15["palavra"], t15["frequencia"], color="#3498db")
+plt.title("Top 15 palavras mais frequentes")
+plt.xlabel("Frequência")
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "top_palavras.png"), dpi=150)
+plt.close()
+
+# ---------- 4. NUVEM DE PALAVRAS ----------
+wc = WordCloud(
+    width=1400, height=700, background_color="white",
+    colormap="viridis", max_words=150, collocations=False
+).generate(" ".join(todas_palavras))
+plt.figure(figsize=(14, 7))
+plt.imshow(wc, interpolation="bilinear")
+plt.axis("off")
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "nuvem_palavras.png"),
+            dpi=150, bbox_inches="tight")
+plt.close()
+
+# ---------- 5. SENTIMENTO ----------
+print("Carregando modelo de sentimento (1ª vez baixa ~500 MB)...")
+analyzer = create_analyzer(task="sentiment", lang="pt")
+
+def get_sent(txt):
+    try:
+        return analyzer.predict(txt[:512]).output
+    except Exception:
+        return "NEU"
+
+df["sentimento"] = df["comentario"].apply(get_sent)
+mapa = {"POS": "Positivo", "NEG": "Negativo", "NEU": "Neutro"}
+df["sentimento_pt"] = df["sentimento"].map(mapa)
+
+sent_counts = df["sentimento_pt"].value_counts().reset_index()
+sent_counts.columns = ["sentimento", "quantidade"]
+
+cores = {"Positivo": "#2ecc71", "Negativo": "#e74c3c", "Neutro": "#95a5a6"}
+plt.figure(figsize=(8, 6))
+plt.bar(sent_counts["sentimento"], sent_counts["quantidade"],
+        color=[cores.get(s, "gray") for s in sent_counts["sentimento"]])
+plt.title("Distribuição de sentimentos")
+plt.ylabel("Quantidade de comentários")
+for i, v in enumerate(sent_counts["quantidade"]):
+    plt.text(i, v, str(v), ha="center", va="bottom")
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "sentimentos.png"), dpi=150)
+plt.close()
+
+# ---------- 6. EMOJIS ----------
+todos_emojis = [
+    c["emoji"] for txt in df["comentario"]
+    for c in emoji.emoji_list(txt)
+]
+emoji_df = pd.DataFrame(
+    Counter(todos_emojis).most_common(30),
+    columns=["emoji", "frequencia"]
+)
+
+if not emoji_df.empty:
+    plt.figure(figsize=(12, 6))
+    top_e = emoji_df.head(15)
+    plt.bar(range(len(top_e)), top_e["frequencia"], color="#f39c12")
+    plt.xticks(range(len(top_e)), top_e["emoji"],
+               fontsize=18, fontname="Segoe UI Emoji")
+    plt.title("Top 15 emojis mais frequentes")
+    plt.ylabel("Frequência")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "top_emojis.png"), dpi=150)
+    plt.close()
+
+# ---------- 7. TOP COMENTÁRIOS POR CURTIDA ----------
+top_comments = (
+    df.sort_values("curtidas", ascending=False)
+      [["usuario", "comentario", "curtidas", "sentimento_pt"]]
+      .head(20)
+      .reset_index(drop=True)
+)
+
+# ---------- 8. EXPORTAR PARA XLSX ----------
+xlsx_path = os.path.join(OUTPUT_DIR, "analise_instagram.xlsx")
+with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+    # Dados normalizados (sem o texto_limpo nem curtidas_raw)
+    df[["usuario", "tempo", "comentario", "curtidas",
+        "sentimento", "sentimento_pt"]].to_excel(
+        writer, sheet_name="Dados_sentimento", index=False)
+
+    top_words_df.to_excel(writer, sheet_name="Top_Palavras", index=False)
+    tf_df.to_excel(writer, sheet_name="TF_Termos", index=False)
+    sent_counts.to_excel(writer, sheet_name="Sentimentos", index=False)
+    emoji_df.to_excel(writer, sheet_name="Top_Emojis", index=False)
+    top_comments.to_excel(writer, sheet_name="Top_Comentarios", index=False)
+
+print("\n✓ Análise concluída!")
+print(f"  Planilha: {xlsx_path}")
+print(f"  Imagens : {OUTPUT_DIR}")
+print(f"\nResumo:")
+print(f"  Total de comentários analisados: {len(df)}")
+print(f"  Total de palavras únicas       : {len(set(todas_palavras))}")
+print(f"  Total de emojis únicos         : {len(emoji_df)}")
+print(f"  Sentimentos:\n{sent_counts.to_string(index=False)}")
