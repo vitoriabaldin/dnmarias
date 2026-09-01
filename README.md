@@ -60,7 +60,9 @@ Anonimização: os nomes de usuário não são mobilizados na análise nem expos
 
 7. Organização do repositório
 .
-├── README.md                     
+
+├── README.md  
+
           
 ├── /data (com os comentários brutos, exportação do Instant Data Scraper)
 ├── /script
