@@ -59,14 +59,10 @@ Filtragem por comprimento mínimo: descarte de tokens com até 2 caracteres.
 Anonimização: os nomes de usuário não são mobilizados na análise nem expostos nos resultados; comentários citados no texto do trabalho são reproduzidos com parcimônia e sem identificação.
 
 7. Organização do repositório
-.
-
-├── README.md  
-
-          
-├── /data (com os comentários brutos, exportação do Instant Data Scraper)
-├── /script
-│   └── analise_comentarios.py     (pipeline completo: pré-processamento e análises )
+8.  README.md     
+├──/data (com os comentários brutos, exportação do Instant Data Scraper)
+├──/script
+│└── analise_comentarios.py     (pipeline completo: pré-processamento e análises )
 ├── 01_nuvem_palavras.png          (nuvem de palavras do corpus)
 ├── 02_top_palavras.png            (top 10 palavras por frequência lexical) 
 ├── 03_tfidf.png                   (termos por TF-IDF médio)
@@ -78,10 +74,10 @@ Anonimização: os nomes de usuário não são mobilizados na análise nem expos
 
 8. Como reproduzir
    A partir do corpus tratado incluído em /data:
-# 1. Clonar o repositório
-# 2. Criar ambiente e instalar dependências
-# 3. Baixar recursos do NLTK (stopwords/tokenizadores pt-BR)
-# 4. Executar o pipeline
+ 1. Clonar o repositório
+2. Criar ambiente e instalar dependências
+3. Baixar recursos do NLTK (stopwords/tokenizadores pt-BR)
+4. Executar o pipeline
 python script/analise_comentarios.py
 
 9. Ética e uso dos dados
